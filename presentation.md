@@ -225,6 +225,15 @@ xss
 
 ![original 100% inline](magic.gif)
 
+---
+
+[.header: alignment(left)]
+# How it works
+
+- the answer is long and ~~boring~~technical
+- ask me later if you're curious about javascript instrumentation
+
+
 ^ The honest answer to how we get 'inside' all of those operations isn't really closely guarded
 
 ^ It's just a lot to relay and it varies from language to language
@@ -235,7 +244,11 @@ xss
 
 ^ I actually gave another talk on some of the techniques we use to do this in javascript, those slides are on my github
 
-^ Regardless, I had no idea how to approach this in Go. Go is different from any language we currently support at Contrast in that it's a compiled language and there's no VM
+^ So I had no idea how to approach this in Go
+
+^ Go is super different from JS. It's different from any language we support, so I really couldn't even ask colleagues of mine.
+
+^ So I did what any self-respecting developer would do and I tried to look up the answer
 
 ---
 
@@ -259,21 +272,7 @@ xss
 
 ^ If it takes a developer 30 minutes to go through an app and add this code it would take hours just to add all of our sources and sinks
 
-^ if you throw propagators into the mix, along with whatever mechanism you'd need to track strings uniquely, it's going to take days
-
-^ it's going to be super error prone
-
-^ it's going to be a miserable experience
-
-^ The hallmark of analysis via runtime instrumentation is supposed to be scalability, accuracy, and ease of use and this isn't any of those things
-
-^ if you're a big financial company with hundreds of applications you need to secure, this adds up. it's completely intractable
-
-^ if a tool is that difficult to use, people just won't bother
-
-^ now certainly nobody wins if developers don't bother with perf monitoring, but it's not necessarily a disaster
-
-^ on the other hand, we can't afford for people to not bother with security
+^ shpiel about how much more we need to do
 
 ^ so my disappointment was simply that I looked at new relic for a magic answer and did not get that
 
@@ -283,7 +282,7 @@ xss
 
 ^ So this became my personal project, nights/weekends, figuring out how to build an agent in Go
 
-^ Most languages offer SOME primitive for intercepting function calls. Go, decidedly, does not.
+^ no primitives for intercepting function calls.
 
 ^ There's no compiler flag for injecting JMPs into compiled functions
 
@@ -294,26 +293,25 @@ xss
 # How it works (in Go)
 
 - AST rewriting
-- still contrast-eyes-only, parts may become open source over time
+- wrap all function calls generically; event-based enter/leave hooks
+- redefine function declarations to weave context through async boundaries
+- WIP; still a few big hurdles to get over
+- not open source, parts may become open source over time
 - sorry
 
-^ I settled on doing everything via AST rewrites and the code this thing produces is gnarly
+^ I settled on doing everything via AST rewrites
+
+^ the code this thing produces is gnarly
 
 ^ it's not really meant for human consumption
 
-^ I can't share that code, unfortunately
-
 ^ there are a couple of big problems to solve
 
-^ so part of it's private status is a matter of liability and we don't want customers trying to do anything with it
+^ can't share code
 
 ^ And I didn't want to stand here and show off a project I can't give people full access to
 
-^ But I sure can change it slightly and throw it in a separate project, and present on that
-
-^ So I'll show that off. It's doing a lot of the same stuff in exactly the same way, it's just less generic than our internal project
-
-^ Note: I'm more than happy to talk, in great detail, about everything I've done to try to make Contrast in Go. Just talk to me.
+^ But I sure can change it slightly, throw it in a separate project, and present on that
 
 ---
 
@@ -337,17 +335,15 @@ xss
 
 ~~magic~~
 
-1. user passes it their credentials and a package directory
-1. it rewrites package source code
-    1. adds `import github.com/newrelic/go-agent`
-    1. adds an `init` function which sets up monitoring (per the docs)
-	1. walks the package, wrapping invokations of `http.HandleFunc`
+1. adds `import github.com/newrelic/go-agent` (and other imports)
+1. adds an `init` function which sets up monitoring (per the docs)
+1. walks the package, wrapping invokations of `http.HandleFunc`
 
 ^ So unlike my personal project, the generated code here IS meant for human consumption
 
 ^ We'll come across the implications of that in a bit
 
-^ But the general idea is that you just give it the credentials you're supposed to throw into your project code, and it'll rewrite your code
+^ But the general idea is that you give it a package directory and it'll just add newrelic for you
 
 ---
 
@@ -357,6 +353,8 @@ xss
 
 > an abstract syntax tree (AST), or just syntax tree, is a tree representation of the abstract syntactic structure of source code written in a programming language.
 --Wikipedia
+
+^ quick definition
 
 ---
 
@@ -400,8 +398,6 @@ a := 1 + 1
 1. traverse tree, changing whatever you want
 1. print the tree back out as source
 
-## Or:
-
 ```go
 import (
 	"golang.org/x/tools/go/ast/astutil"
@@ -415,23 +411,433 @@ import (
 
 ^ There used to be a lot of boilerplate
 
-^ you had to use the stdlib to find the disk location of fileso
+^ you had to use the stdlib to find the disk location of files in a pkg
 
 ^ read the files
 
-^ set up the type checker, call the parser
+^ set up type checker, call parser
 
-^ traverse the AST with limited functions that didn't do a good job of helping you rewrite, very tedious stuff
+^ traverse AST w/ limited functions for rewriting, very tedious to change anything
 
-^ astutil eases a lot of the messiness of dealing with a physical AST
+^ astutil (gri) eases a lot of the messiness of dealing with a physical AST
 
-^ go/packages removes a lot of the boilerplate needed to actually get to an AST
+^ go/packages (go team) removes a lot of the boilerplate needed to actually get to an AST
 
 ^ you pass it a config and a directory and it automatically hands you this beautifully parsed and typed-checked package
 
 ^ it's a convenient wrapper on all of those other packages
 
 ^ there is a cabal of people who work on Go whose contributions are centered on tooling, and have been actively reaching out to tool developers in open source and trying to get them to convert to go/packages instead of rolling their own solutions by composing the packages mentioned in the previous slide
+
+---
+
+```go
+cfg := &packages.Config{
+	Mode: packages.LoadAllSyntax,
+}
+
+pkgs, err := packages.Load(cfg, ".")
+if err != nil {
+	log.Fatal(err)
+}
+
+packages.Visit(pkgs, func(*packages.Package) bool {
+	return true
+}, func(p *packages.Package) {
+	for _, file := range p.Syntax {
+		astutil.Apply(file, nil, func(c *astutil.Cursor) bool {
+			// ...
+			return true
+		})
+	}
+})
+```
+
+^ abstract example
+
+^ with these packages, here's kind of the boilerplate for traversing and modifying an AST
+
+^ doesn't include printing the AST
+
+^ ... is where you can do anything you want
+
+---
+
+[.code-highlight: all]
+[.code-highlight: 9]
+[.code-highlight: 9, 14]
+[.code-highlight: 9, 14, 18, 21]
+[.code-highlight: 9, 14, 18, 21, 23, 24]
+
+```go
+func injectInit(pkg *packages.Package) {
+	if pkg.Name != "main" {
+		return
+	}
+
+	f := pkg.Syntax[0]
+	// not sure if I should go through apply/replace here, or just modify the file directly
+	astutil.Apply(f, func(c *astutil.Cursor) bool {
+		file, ok := c.Node().(*ast.File)
+		if !ok {
+			return true
+		}
+
+		d := buildInitFunc()
+
+		// add our package-wide 'app' variable to assign to
+		// for use by wrappers
+		file.Decls = append(file.Decls, appVar())
+
+		// cannot c.Replace File nodes (see Cursor doc for reasoning) so we modify the File directly
+		file.Decls = append(file.Decls, d)
+
+		astutil.AddNamedImport(pkg.Fset, f, "newrelic", "github.com/newrelic/go-agent")
+		astutil.AddImport(pkg.Fset, f, "os")
+
+		return false
+
+	}, nil)
+}
+```
+
+^ so this is how we inject our init
+
+^ [build] in Apply, do a type check, to see if we're currently visiting a File node
+
+^ [build] we generate some AST nodes, which I'll go over in a sec
+
+^ [build] then we just append to the list of declarations in the file
+
+^ [build] and add whatever imports we need
+
+^ so i'm not kidding when I say libraries really simplify a lot of this
+
+---
+
+```go
+// creates the node: `var newrelicApp newrelic.Application`
+func appVar() *ast.GenDecl {
+	d := &ast.GenDecl{
+		Tok: token.VAR,
+		Specs: []ast.Spec{
+			&ast.ValueSpec{
+				Names: []*ast.Ident{ast.NewIdent("newrelicApp")},
+				Type: &ast.SelectorExpr{
+					X:   ast.NewIdent("newrelic"),
+					Sel: ast.NewIdent("Application"),
+				},
+			},
+		},
+	}
+
+	return d
+}
+```
+
+^ this is what those helper functions are basically doing
+
+^ this looks like a lot but it's really just building some structs given to us by the ast/package
+
+^ so if you understand the models a bit, this is just a bit tedious
+
+^ helps to find patterns in the nodes you need to generate and make a lot of helper functions
+
+^ sometimes just write the code you want in a file and parse that AST to get an idea of what you need to do
+
+^ constantly using go doc for reference---editor on one half of my screen, terminal window on the other just for go doc
+
+---
+
+# Wrapping `http.HandleFunc`
+
+```go
+if doesFuncTypeMatch(call, httpHandleFuncType, pkg.TypesInfo) {
+	wrapped := &ast.CallExpr{
+		Fun: c.Fun,
+		Args: []ast.Expr{
+			&ast.CallExpr{
+				Fun: &ast.SelectorExpr{
+					X:   ast.NewIdent("newrelic"),
+					Sel: ast.NewIdent("WrapHandleFunc"),
+				},
+				Args: []ast.Expr{
+					ast.NewIdent("newrelicApp"),
+					c.Args[0],
+					c.Args[1],
+				},
+			},
+		},
+	}
+	cursor.Replace(wrapped)
+}
+```
+
+^ straightforward to do the replacement of the callexpr
+
+^ just kinda shifting things down a bit and creating this new callexpr to use as an arg
+
+^ the tricky part is finding calls of the right function
+
+---
+
+# Why not search and replace?
+
+```go
+var h = http.HandleFunc
+h("/hi", handler)
+```
+
+^ I know it seems like we're chasing edge cases, but it's not really correct to just search and replace if you don't know the app
+
+^ so instead what we do is use the signature of http.HandleFunc, and type check the function being called
+
+---
+
+```go
+func doesFuncTypeMatch(call *ast.CallExpr, sig string, info *types.Info) bool {
+	typ, ok := info.TypeOf(call.Fun).(*types.Signature)
+	if !ok {
+		return false
+	}
+
+	if typ.String() != sig {
+		return false
+	}
+
+	return true
+}
+```
+
+`func(pattern string, handler func(net/http.ResponseWriter, *net/http.Request))`
+
+^ there are still cases this won't catch, and cases this gets wrong
+
+^ for example, while this signature is pretty unique, you could just rmake your own function with this exact sig and you'd fool the rewriter
+
+^ fortunately that doesn't break anything because the types are the same
+
+^ now there's one kinda big outstanding issue
+
+---
+
+# Heck
+
+![fit inline](commentsissue.png)
+
+^ This was all way too easy so far, so there's one last thing we need to deal with
+
+---
+
+# The Comments Problem
+
+```go
+//go:noescape
+func f() {
+ 	// prints "i like cats"
+	fmt.Println(/*FIXME maybe this should be cats?*/"i like dogs")
+
+	// some people don't like dogs
+
+	fmt.Println("sorry if you don't like dogs")
+}
+```
+
+- not all comments can be associated with a node
+- comment position is very important
+- when AST is changed, it is unclear what to do with 'lossy' comments
+
+^ so there are a bunch of different comments in this snippet
+
+^ the top comment is a doc comment, and these are stored as children of their corresponding node in the AST
+
+^ but it also includes a compiler directive---so even if a rewriter produces code not meant for human consumption, it needs to preserver that comment
+
+^ not now all comments are doc comments. these are children of File, the top level node. like all nodes, the parser stores their exact positions.
+
+^ the contrast rewriter just throws unimportant comments away and manually adjusts the position of important ones
+
+^ which is easy because these all have to exist as doc comments, and have parent nodes
+
+^ it can do this because the generated code isn't meant for human consumption anyway
+
+^ this tool doesn't have that luxury
+
+---
+
+# The Comments Workaround: `dst`
+
+* [github.com/dave/dst](https://github.com/dave/dst)
+* 'decorated syntax tree'
+* adds 'decorations' to **every** node
+* `%s/ast/dst/g`
+
+^ so this is a package that someone in that issue started working on and linked
+
+^ ultimately this should be something the standard library can just do, but it would take a non-trivial refactor
+
+^ what dst does is generate wrapped versions of every AST struct
+
+^ this wrapping includes some 'decorations' which include much more granular comment position info
+
+^ when file is printed, it uses the decorations to place comments in the correct location
+
+^ it's a lot slower---it's keeping both the AST and the DST around in memory and mapping between them bidirectionally
+
+^ but, it's pretty much a drop-in replacement
+
+^ so i can basically just search and replace ast --> dst and i'm fine
+
+---
+
+# Testing
+
+* golden files are super duper useful for testing AST rewrites
+* spend time setting up helpers
+* use real packages as test data
+* use test names to manage location of test input data/goldens
+
+^ ast manipulation perfect use case for golden files,
+
+^ for those who don't know it's just data that describes exactly the expected output
+
+^ they're great on their own but I find it helpful to make regular assertions as well, you get better errors that way
+
+^ helpers hide a lot of the boilerplate involved; if you wanna test a transform you need to input a type checked AST
+
+^ not easy to mock that stuff, so don't. use real packages and hide the boilerplate around accessing them in helpers
+
+^ if you do this there'll be a lot of test data, so to organize I let the test name determine the file/package locations
+
+^ otherwise, test early and often. I'm not advocating TDD, but AST manipulation can be a game of chasing edge cases
+
+^ and you'll think of these edge cases when you're nowhere near your computer
+
+^ so at least add the scaffolding for tests early on so that you have a good place to keep these
+
+---
+
+# Demo
+
+---
+
+# Beyond new-relic - untargetted rewrites
+
+```go
+http.HandleFunc("/edit/", makeHandler(editHandler))
+// -->
+http.HandleFunc(newrelic.WrapHandleFunc(newrelicApp, "/edit/", makeHandler(editHandler)))
+```
+
+^ so gonna step back and look at function calls again
+
+^ this is how we intercept the HandleFunc call for newrelic
+
+---
+
+# 👀
+
+```go
+func() {
+    var _arg0 string = "/edit/"
+    var _arg1 http.HandlerFunc = func() http.HandlerFunc {
+        var _arg0 func(http.ResponseWriter, *http.Request, string) = editHandler
+        notContrast.Emit(
+			notContrast.PRE,
+			"bitbucket.org/contrastsecurity/go-test-apps/wiki",
+			"main",
+			"makeHandler",
+			[]interface {}{&_arg0},
+			nil,
+			nil,
+		)
+        _res0 := makeHandler(_arg0)
+        notContrast.Emit(notContrast.POST, "bitbucket.org/contrastsecurity/go-test-apps/wiki", "main", "makeHandler", []interface {}{&_arg0}, []interface {}{&_res0}, nil)
+        return _res0
+    }()
+    notContrast.Emit(notContrast.PRE, "net/http", "main", "HandleFunc", []interface {}{&_arg0, &_arg1}, nil, nil)
+    http.HandleFunc(_arg0, _arg1)
+    notContrast.Emit(notContrast.POST, "net/http", "main", "HandleFunc", []interface {}{&_arg0, &_arg1}, nil, nil)
+    return
+}()
+```
+
+^ so this is another way you could wrap a function
+
+^ apologize for highlighting fail
+
+^ the difference is, this is an untargetted approach
+
+^ for each function call, we wrap in an immediately invoked function, save the args, emit some context, call the original, save the results, re-emit the context as a sort of post-hook, and return the results
+
+^ in emit, a handler can just look at the context and decide what it wants to do, if anything
+
+^ now there are pros and cons to doing this vs targetting with a pre-built, custom wrapper
+
+^ for starters, readability is dead
+
+^ this gives a shitload more coverage
+
+^ and despite being 'untargetted' -- as in, I could wrap any function call this way, it's a much more precise way to ensure that i only touch what I need
+
+^ because I can use reflection to determine exactly what I'm dealing with
+
+^ so this is roughly what the agent does, to start with
+
+---
+
+# Other Fun Stuff We Maybe™️ Do
+
+---
+
+# Request Context
+
+```go
+func someFunc(s string) {
+	go func() {
+		database.query(s)
+	}()
+}
+
+func injected_someFunc(ctxt *notContrast.Context, s string) {
+	// do something with ctxt
+	notContrast.Emit(/*...*/, ctxt)
+
+	// direct copy of someFunc
+	go func() {
+		database.query(s)
+	}()
+	//
+}
+```
+
+^ say you wanna pass request context to whatever instrumentation handles db.query
+
+^ so you know if a request triggered that call, and if so, which
+
+^ can use this to closure along request context
+
+---
+
+# Package Wrapping
+
+```go
+// main
+import (
+	"notContrast/http"
+)
+
+// notContrast/http
+import "http"
+func HandleFunc(pattern string, handler func(ResponseWriter, *Request)) {
+	// do whatever I want
+	return http.HandleFunc(patter, handler)
+}
+```
+
+^ this is good if you already know exactly what is in the http package
+
+^ you can make things easier by wrapping stuff ahead of time and subbing out imports
 
 ---
 
